@@ -1,15 +1,17 @@
-#!/usr/bin/env python3
-import http.server
-import socketserver
+from fastapi import FastAPI
 
-class MoneyHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-        self.wfile.write(b'<h1>AI Money Generator</h1>')
+from app.config import settings
 
-PORT = 8000
-with socketserver.TCPServer(("", PORT), MoneyHandler) as httpd:
-    print(f"Server running on port {PORT}")
-    httpd.serve_forever()
+app = FastAPI(title="API", version="0.0.1")
+
+@app.get("/")
+async def root():
+    return {
+        "message": settings.APP_DOMAIN,
+        "status": "running",
+    }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
