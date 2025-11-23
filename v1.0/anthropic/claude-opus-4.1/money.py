@@ -1,20 +1,25 @@
 """
-Automated Content Monetization System
-This program creates valuable content and monetizes it through multiple channels
+Crypto Arbitrage Opportunity Scanner & Alert System
+Monitors price differences across exchanges and sends alerts for profitable arbitrage opportunities
 """
 
 import os
-import json
 import time
-import random
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Optional
+import asyncio
+import aiohttp
+from decimal import Decimal
+import hmac
 import hashlib
 import requests
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-import logging
-from dataclasses import dataclass, asdict
-import sqlite3
-from contextlib import contextmanager
+from dataclasses import dataclass
+from collections import defaultdict
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Configure logging
 logging.basicConfig(
@@ -23,493 +28,353 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
 @dataclass
-class Config:
-    """System configuration"""
-    openai_api_key: str = os.getenv('OPENAI_API_KEY', '')
-    database_path: str = os.getenv('DATABASE_PATH', 'monetization.db')
-    webhook_url: str = os.getenv('WEBHOOK_URL', '')
-    stripe_api_key: str = os.getenv('STRIPE_API_KEY', '')
-    api_port: int = int(os.getenv('API_PORT', '8080'))
+class ArbitrageOpportunity:
+    """Represents a profitable arbitrage opportunity"""
+    symbol: str
+    buy_exchange: str
+    sell_exchange: str
+    buy_price: Decimal
+    sell_price: Decimal
+    profit_percentage: Decimal
+    volume_available: Decimal
+    timestamp: datetime
     
-    # Monetization settings
-    content_price: float = 4.99
-    subscription_price: float = 19.99
-    affiliate_commission: float = 0.15
-    
-    # Content generation settings
-    topics: List[str] = None
-    
-    def __post_init__(self):
-        if self.topics is None:
-            self.topics = [
-                "productivity tips", "investing basics", "health optimization",
-                "technology trends", "business strategies", "personal development",
-                "cryptocurrency insights", "remote work tips", "startup advice",
-                "passive income ideas"
-            ]
+    def __str__(self):
+        return (f"🚨 ARBITRAGE ALERT: {self.symbol}\n"
+                f"Buy on {self.buy_exchange}: ${self.buy_price:.4f}\n"
+                f"Sell on {self.sell_exchange}: ${self.sell_price:.4f}\n"
+                f"Profit: {self.profit_percentage:.2f}%\n"
+                f"Max Volume: {self.volume_available:.4f}")
 
-config = Config()
+class ExchangeAPI:
+    """Base class for exchange APIs"""
+    
+    def __init__(self, name: str):
+        self.name = name
+        self.session = None
+        
+    async def get_ticker(self, symbol: str) -> Dict:
+        """Get current ticker data for a symbol"""
+        raise NotImplementedError
+        
+    async def close(self):
+        """Close the session"""
+        if self.session:
+            await self.session.close()
 
-class DatabaseManager:
-    """Handle all database operations"""
+class BinanceAPI(ExchangeAPI):
+    """Binance exchange API wrapper"""
     
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.init_database()
-    
-    @contextmanager
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+    def __init__(self):
+        super().__init__("Binance")
+        self.base_url = "https://api.binance.com/api/v3"
+        
+    async def get_ticker(self, symbol: str) -> Dict:
+        """Get Binance ticker data"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+            
         try:
-            yield conn
-        finally:
-            conn.close()
-    
-    def init_database(self):
-        """Initialize database tables"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Content table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS content (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    body TEXT NOT NULL,
-                    topic TEXT NOT NULL,
-                    price REAL DEFAULT 4.99,
-                    views INTEGER DEFAULT 0,
-                    purchases INTEGER DEFAULT 0,
-                    revenue REAL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Customers table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS customers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    subscription_active BOOLEAN DEFAULT 0,
-                    total_spent REAL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Transactions table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    customer_id INTEGER,
-                    content_id INTEGER,
-                    amount REAL NOT NULL,
-                    type TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (customer_id) REFERENCES customers (id),
-                    FOREIGN KEY (content_id) REFERENCES content (id)
-                )
-            ''')
-            
-            # Analytics table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS analytics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    metric_name TEXT NOT NULL,
-                    metric_value REAL NOT NULL,
-                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            conn.commit()
-
-class ContentGenerator:
-    """Generate valuable content using AI"""
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
-    
-    def generate_content(self, topic: str) -> Dict[str, str]:
-        """Generate high-quality content on a given topic"""
-        try:
-            # Simulate AI content generation (replace with actual API call when key is available)
-            if not self.api_key:
-                # Fallback content generation
-                return self._generate_fallback_content(topic)
-            
-            # OpenAI API call (uncomment when API key is available)
-            """
-            response = requests.post(
-                'https://api.openai.com/v1/chat/completions',
-                headers=self.headers,
-                json={
-                    'model': 'gpt-3.5-turbo',
-                    'messages': [
-                        {'role': 'system', 'content': 'You are an expert content creator.'},
-                        {'role': 'user', 'content': f'Write a comprehensive article about {topic}. Include actionable tips.'}
-                    ],
-                    'max_tokens': 1000
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                content = data['choices'][0]['message']['content']
-                return {
-                    'title': f"Expert Guide: {topic.title()}",
-                    'body': content,
-                    'topic': topic
-                }
-            """
-            
-            return self._generate_fallback_content(topic)
-            
+            url = f"{self.base_url}/ticker/24hr"
+            params = {"symbol": symbol.replace("/", "")}
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        "bid": Decimal(data.get("bidPrice", 0)),
+                        "ask": Decimal(data.get("askPrice", 0)),
+                        "volume": Decimal(data.get("volume", 0))
+                    }
         except Exception as e:
-            logger.error(f"Content generation error: {e}")
-            return self._generate_fallback_content(topic)
-    
-    def _generate_fallback_content(self, topic: str) -> Dict[str, str]:
-        """Generate fallback content when API is unavailable"""
-        templates = {
-            "productivity tips": {
-                "title": "10 Science-Backed Productivity Hacks for 2024",
-                "body": """
-                Discover the most effective productivity techniques that successful entrepreneurs use:
-                
-                1. The 2-Minute Rule: If it takes less than 2 minutes, do it now.
-                2. Time Blocking: Schedule specific blocks for focused work.
-                3. The Pomodoro Technique: Work in 25-minute sprints.
-                4. Batch Processing: Group similar tasks together.
-                5. Digital Minimalism: Reduce digital distractions.
-                6. Morning Routines: Start your day with intention.
-                7. Energy Management: Work with your natural energy cycles.
-                8. Delegation Strategies: Focus on high-value tasks.
-                9. Automation Tools: Let technology handle repetitive tasks.
-                10. Regular Reviews: Weekly and monthly progress assessments.
-                
-                Implementation guide included with purchase!
-                """
-            },
-            "investing basics": {
-                "title": "Beginner's Guide to Building Wealth Through Smart Investing",
-                "body": """
-                Start your investment journey with these fundamental strategies:
-                
-                - Understanding Risk vs. Reward
-                - Dollar-Cost Averaging Explained
-                - Index Fund Investing for Beginners
-                - The Power of Compound Interest
-                - Portfolio Diversification Strategies
-                - Tax-Efficient Investing Tips
-                - Common Investment Mistakes to Avoid
-                - Setting Realistic Investment Goals
-                - Emergency Fund First Principle
-                - Long-term vs. Short-term Strategies
-                
-                Includes personalized investment calculator and checklist!
-                """
-            }
-        }
-        
-        if topic in templates:
-            return {
-                'title': templates[topic]['title'],
-                'body': templates[topic]['body'],
-                'topic': topic
-            }
-        
-        # Generic content for other topics
-        return {
-            'title': f"Ultimate Guide to {topic.title()}",
-            'body': f"""
-            Comprehensive guide covering everything you need to know about {topic}:
-            
-            • Fundamental concepts and principles
-            • Step-by-step implementation strategies
-            • Real-world case studies and examples
-            • Common pitfalls and how to avoid them
-            • Advanced techniques for maximizing results
-            • Tools and resources recommendations
-            • Action plan template included
-            
-            This premium content is continuously updated with the latest insights and strategies.
-            Get instant access and transform your approach to {topic}!
-            """,
-            'topic': topic
-        }
+            logger.error(f"Binance API error: {e}")
+        return {"bid": Decimal(0), "ask": Decimal(0), "volume": Decimal(0)}
 
-class MonetizationEngine:
-    """Handle all monetization strategies"""
+class KucoinAPI(ExchangeAPI):
+    """KuCoin exchange API wrapper"""
     
-    def __init__(self, db_manager: DatabaseManager):
-        self.db = db_manager
-        self.content_generator = ContentGenerator(config.openai_api_key)
-    
-    def create_premium_content(self) -> Optional[int]:
-        """Create new premium content"""
-        topic = random.choice(config.topics)
-        content = self.content_generator.generate_content(topic)
+    def __init__(self):
+        super().__init__("KuCoin")
+        self.base_url = "https://api.kucoin.com/api/v1"
         
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO content (title, body, topic, price)
-                VALUES (?, ?, ?, ?)
-            ''', (content['title'], content['body'], content['topic'], config.content_price))
-            conn.commit()
+    async def get_ticker(self, symbol: str) -> Dict:
+        """Get KuCoin ticker data"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
             
-            logger.info(f"Created premium content: {content['title']}")
-            return cursor.lastrowid
-    
-    def process_payment(self, customer_email: str, content_id: int, amount: float) -> bool:
-        """Process a payment transaction"""
         try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Get or create customer
-                cursor.execute('SELECT id FROM customers WHERE email = ?', (customer_email,))
-                customer = cursor.fetchone()
-                
-                if not customer:
-                    cursor.execute('''
-                        INSERT INTO customers (email, total_spent)
-                        VALUES (?, ?)
-                    ''', (customer_email, amount))
-                    customer_id = cursor.lastrowid
-                else:
-                    customer_id = customer['id']
-                    cursor.execute('''
-                        UPDATE customers 
-                        SET total_spent = total_spent + ?
-                        WHERE id = ?
-                    ''', (amount, customer_id))
-                
-                # Record transaction
-                cursor.execute('''
-                    INSERT INTO transactions (customer_id, content_id, amount, type, status)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (customer_id, content_id, amount, 'purchase', 'completed'))
-                
-                # Update content revenue
-                cursor.execute('''
-                    UPDATE content 
-                    SET purchases = purchases + 1,
-                        revenue = revenue + ?
-                    WHERE id = ?
-                ''', (amount, content_id))
-                
-                conn.commit()
-                logger.info(f"Payment processed: ${amount} from {customer_email}")
-                return True
-                
+            symbol_formatted = symbol.replace("/", "-")
+            url = f"{self.base_url}/market/orderbook/level1"
+            params = {"symbol": symbol_formatted}
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("data"):
+                        return {
+                            "bid": Decimal(data["data"].get("bestBid", 0)),
+                            "ask": Decimal(data["data"].get("bestAsk", 0)),
+                            "volume": Decimal(data["data"].get("size", 0))
+                        }
         except Exception as e:
-            logger.error(f"Payment processing error: {e}")
-            return False
-    
-    def calculate_affiliate_commission(self, sale_amount: float) -> float:
-        """Calculate affiliate commission"""
-        return sale_amount * config.affiliate_commission
-    
-    def get_analytics(self) -> Dict:
-        """Get current analytics and metrics"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Total revenue
-            cursor.execute('SELECT SUM(revenue) as total FROM content')
-            total_revenue = cursor.fetchone()['total'] or 0
-            
-            # Total customers
-            cursor.execute('SELECT COUNT(*) as count FROM customers')
-            total_customers = cursor.fetchone()['count']
-            
-            # Total content pieces
-            cursor.execute('SELECT COUNT(*) as count FROM content')
-            total_content = cursor.fetchone()['count']
-            
-            # Best performing content
-            cursor.execute('''
-                SELECT title, revenue, purchases 
-                FROM content 
-                ORDER BY revenue DESC 
-                LIMIT 5
-            ''')
-            top_content = [dict(row) for row in cursor.fetchall()]
-            
-            return {
-                'total_revenue': total_revenue,
-                'total_customers': total_customers,
-                'total_content': total_content,
-                'top_content': top_content,
-                'average_order_value': total_revenue / max(total_customers, 1)
-            }
+            logger.error(f"KuCoin API error: {e}")
+        return {"bid": Decimal(0), "ask": Decimal(0), "volume": Decimal(0)}
 
-class AutomationManager:
-    """Manage automated tasks and scheduling"""
+class CoinbaseAPI(ExchangeAPI):
+    """Coinbase exchange API wrapper"""
     
-    def __init__(self, monetization_engine: MonetizationEngine):
-        self.engine = monetization_engine
-        self.last_content_creation = datetime.now()
-        self.last_analytics_report = datetime.now()
-    
-    def run_automated_tasks(self):
-        """Run scheduled automated tasks"""
-        current_time = datetime.now()
+    def __init__(self):
+        super().__init__("Coinbase")
+        self.base_url = "https://api.exchange.coinbase.com"
         
-        # Create new content every 4 hours
-        if (current_time - self.last_content_creation).total_seconds() > 14400:
-            self.engine.create_premium_content()
-            self.last_content_creation = current_time
-        
-        # Generate analytics report every hour
-        if (current_time - self.last_analytics_report).total_seconds() > 3600:
-            analytics = self.engine.get_analytics()
-            self._send_analytics_report(analytics)
-            self.last_analytics_report = current_time
-    
-    def _send_analytics_report(self, analytics: Dict):
-        """Send analytics report via webhook"""
-        if config.webhook_url:
-            try:
-                requests.post(config.webhook_url, json=analytics)
-                logger.info("Analytics report sent")
-            except Exception as e:
-                logger.error(f"Failed to send analytics: {e}")
-        
-        # Log analytics
-        logger.info(f"Analytics Update: Revenue=${analytics['total_revenue']:.2f}, "
-                   f"Customers={analytics['total_customers']}, "
-                   f"Content={analytics['total_content']}")
+    async def get_ticker(self, symbol: str) -> Dict:
+        """Get Coinbase ticker data"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+            
+        try:
+            symbol_formatted = symbol.replace("/", "-")
+            url = f"{self.base_url}/products/{symbol_formatted}/ticker"
+            headers = {"User-Agent": "ArbitrageBot/1.0"}
+            async with self.session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        "bid": Decimal(data.get("bid", 0)),
+                        "ask": Decimal(data.get("ask", 0)),
+                        "volume": Decimal(data.get("volume", 0))
+                    }
+        except Exception as e:
+            logger.error(f"Coinbase API error: {e}")
+        return {"bid": Decimal(0), "ask": Decimal(0), "volume": Decimal(0)}
 
-class SimpleAPIServer:
-    """Simple API server for handling requests"""
+class ArbitrageScanner:
+    """Main arbitrage scanner and alert system"""
     
-    def __init__(self, monetization_engine: MonetizationEngine):
-        self.engine = monetization_engine
-    
-    def handle_purchase(self, email: str, content_id: int) -> Dict:
-        """Handle content purchase request"""
-        success = self.engine.process_payment(email, content_id, config.content_price)
+    def __init__(self):
+        self.exchanges = [
+            BinanceAPI(),
+            KucoinAPI(),
+            CoinbaseAPI()
+        ]
+        self.symbols = [
+            "BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT",
+            "ADA/USDT", "SOL/USDT", "DOGE/USDT", "DOT/USDT",
+            "MATIC/USDT", "LTC/USDT"
+        ]
+        self.min_profit_percentage = Decimal("0.5")  # Minimum 0.5% profit
+        self.opportunities = []
+        self.sent_alerts = defaultdict(lambda: datetime.min)
+        self.alert_cooldown = timedelta(minutes=30)
         
-        if success:
-            return {
-                'status': 'success',
-                'message': 'Purchase completed successfully',
-                'amount': config.content_price
-            }
-        else:
-            return {
-                'status': 'error',
-                'message': 'Purchase failed'
-            }
-    
-    def get_content_list(self) -> List[Dict]:
-        """Get list of available content"""
-        with self.engine.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT id, title, topic, price, purchases
-                FROM content
-                ORDER BY created_at DESC
-                LIMIT 20
-            ''')
-            return [dict(row) for row in cursor.fetchall()]
-
-def main():
-    """Main application entry point"""
-    logger.info("Starting Automated Content Monetization System")
-    
-    # Initialize components
-    db_manager = DatabaseManager(config.database_path)
-    monetization_engine = MonetizationEngine(db_manager)
-    automation_manager = AutomationManager(monetization_engine)
-    api_server = SimpleAPIServer(monetization_engine)
-    
-    # Create initial content batch
-    logger.info("Creating initial premium content...")
-    for _ in range(5):
-        monetization_engine.create_premium_content()
-        time.sleep(1)  # Avoid rate limiting
-    
-    # Simulate some initial purchases for demonstration
-    demo_customers = [
-        "customer1@example.com",
-        "customer2@example.com",
-        "customer3@example.com"
-    ]
-    
-    content_list = api_server.get_content_list()
-    if content_list:
-        for customer in demo_customers:
-            content = random.choice(content_list)
-            api_server.handle_purchase(customer, content['id'])
-    
-    # Main loop
-    logger.info("System is now running and making money!")
-    iteration = 0
-    
-    try:
-        while True:
-            iteration += 1
-            logger.info(f"Running iteration {iteration}")
+        # Email configuration from environment variables
+        self.email_enabled = os.getenv("ENABLE_EMAIL_ALERTS", "false").lower() == "true"
+        self.email_from = os.getenv("EMAIL_FROM", "")
+        self.email_to = os.getenv("EMAIL_TO", "")
+        self.email_password = os.getenv("EMAIL_PASSWORD", "")
+        self.smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        
+        # Webhook configuration
+        self.webhook_url = os.getenv("WEBHOOK_URL", "")
+        
+    async def fetch_prices(self, symbol: str) -> Dict[str, Dict]:
+        """Fetch prices from all exchanges for a symbol"""
+        prices = {}
+        tasks = []
+        
+        for exchange in self.exchanges:
+            tasks.append(self.fetch_exchange_price(exchange, symbol))
             
-            # Run automated tasks
-            automation_manager.run_automated_tasks()
-            
-            # Get and display current analytics
-            analytics = monetization_engine.get_analytics()
-            
-            print("\n" + "="*50)
-            print("💰 MONETIZATION SYSTEM DASHBOARD 💰")
-            print("="*50)
-            print(f"Total Revenue: ${analytics['total_revenue']:.2f}")
-            print(f"Total Customers: {analytics['total_customers']}")
-            print(f"Content Pieces: {analytics['total_content']}")
-            print(f"Avg Order Value: ${analytics['average_order_value']:.2f}")
-            
-            if analytics['top_content']:
-                print("\n📊 Top Performing Content:")
-                for i, content in enumerate(analytics['top_content'][:3], 1):
-                    print(f"{i}. {content['title'][:50]}...")
-                    print(f"   Revenue: ${content['revenue']:.2f} | Sales: {content['purchases']}")
-            
-            # Simulate random purchases (in production, this would be real traffic)
-            if random.random() > 0.7:  # 30% chance of purchase each iteration
-                if content_list:
-                    content = random.choice(content_list)
-                    customer_email = f"customer{random.randint(1000, 9999)}@example.com"
-                    result = api_server.handle_purchase(customer_email, content['id'])
+        results = await asyncio.gather(*tasks)
+        
+        for exchange, price_data in results:
+            if price_data:
+                prices[exchange.name] = price_data
+                
+        return prices
+    
+    async def fetch_exchange_price(self, exchange: ExchangeAPI, symbol: str) -> Tuple[ExchangeAPI, Dict]:
+        """Fetch price from a single exchange"""
+        try:
+            price_data = await exchange.get_ticker(symbol)
+            return (exchange, price_data)
+        except Exception as e:
+            logger.error(f"Error fetching from {exchange.name}: {e}")
+            return (exchange, None)
+    
+    def calculate_arbitrage(self, symbol: str, prices: Dict[str, Dict]) -> List[ArbitrageOpportunity]:
+        """Calculate arbitrage opportunities from price data"""
+        opportunities = []
+        
+        exchanges = list(prices.keys())
+        for i in range(len(exchanges)):
+            for j in range(len(exchanges)):
+                if i == j:
+                    continue
                     
-                    if result['status'] == 'success':
-                        print(f"\n🎉 NEW SALE: ${result['amount']:.2f} from {customer_email}")
+                buy_exchange = exchanges[i]
+                sell_exchange = exchanges[j]
+                
+                buy_price = prices[buy_exchange]["ask"]
+                sell_price = prices[sell_exchange]["bid"]
+                
+                if buy_price <= 0 or sell_price <= 0:
+                    continue
+                
+                profit_percentage = ((sell_price - buy_price) / buy_price) * 100
+                
+                if profit_percentage >= self.min_profit_percentage:
+                    volume = min(
+                        prices[buy_exchange]["volume"],
+                        prices[sell_exchange]["volume"]
+                    ) * Decimal("0.01")  # Conservative volume estimate
+                    
+                    opportunity = ArbitrageOpportunity(
+                        symbol=symbol,
+                        buy_exchange=buy_exchange,
+                        sell_exchange=sell_exchange,
+                        buy_price=buy_price,
+                        sell_price=sell_price,
+                        profit_percentage=profit_percentage,
+                        volume_available=volume,
+                        timestamp=datetime.now()
+                    )
+                    opportunities.append(opportunity)
+                    
+        return opportunities
+    
+    def send_email_alert(self, opportunity: ArbitrageOpportunity):
+        """Send email alert for arbitrage opportunity"""
+        if not self.email_enabled or not all([self.email_from, self.email_to, self.email_password]):
+            return
             
-            print("\n" + "="*50)
-            print("System is actively generating revenue 24/7")
-            print("Press Ctrl+C to stop")
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = self.email_from
+            msg['To'] = self.email_to
+            msg['Subject'] = f"Arbitrage Alert: {opportunity.profit_percentage:.2f}% on {opportunity.symbol}"
             
-            # Wait before next iteration (in production, this could be event-driven)
-            time.sleep(30)
+            body = str(opportunity)
+            msg.attach(MIMEText(body, 'plain'))
             
-    except KeyboardInterrupt:
-        logger.info("Shutting down monetization system")
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.email_from, self.email_password)
+                server.send_message(msg)
+                
+            logger.info(f"Email alert sent for {opportunity.symbol}")
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+    
+    def send_webhook_alert(self, opportunity: ArbitrageOpportunity):
+        """Send webhook alert for arbitrage opportunity"""
+        if not self.webhook_url:
+            return
+            
+        try:
+            payload = {
+                "text": str(opportunity),
+                "symbol": opportunity.symbol,
+                "profit_percentage": float(opportunity.profit_percentage),
+                "buy_exchange": opportunity.buy_exchange,
+                "sell_exchange": opportunity.sell_exchange,
+                "buy_price": float(opportunity.buy_price),
+                "sell_price": float(opportunity.sell_price),
+                "timestamp": opportunity.timestamp.isoformat()
+            }
+            
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"Webhook alert sent for {opportunity.symbol}")
+        except Exception as e:
+            logger.error(f"Failed to send webhook: {e}")
+    
+    def should_send_alert(self, opportunity: ArbitrageOpportunity) -> bool:
+        """Check if we should send an alert for this opportunity"""
+        key = f"{opportunity.symbol}_{opportunity.buy_exchange}_{opportunity.sell_exchange}"
+        last_sent = self.sent_alerts[key]
         
-        # Final analytics
-        final_analytics = monetization_engine.get_analytics()
-        print("\n" + "="*50)
-        print("FINAL REVENUE REPORT")
-        print("="*50)
-        print(f"Total Revenue Generated: ${final_analytics['total_revenue']:.2f}")
-        print(f"Total Customers Acquired: {final_analytics['total_customers']}")
-        print(f"Total Content Created: {final_analytics['total_content']}")
-        print("="*50)
+        if datetime.now() - last_sent > self.alert_cooldown:
+            self.sent_alerts[key] = datetime.now()
+            return True
+        return False
+    
+    async def scan_once(self):
+        """Perform one scan cycle"""
+        logger.info("Starting scan cycle...")
+        all_opportunities = []
+        
+        for symbol in self.symbols:
+            try:
+                prices = await self.fetch_prices(symbol)
+                if len(prices) >= 2:
+                    opportunities = self.calculate_arbitrage(symbol, prices)
+                    all_opportunities.extend(opportunities)
+            except Exception as e:
+                logger.error(f"Error scanning {symbol}: {e}")
+        
+        # Sort by profit percentage
+        all_opportunities.sort(key=lambda x: x.profit_percentage, reverse=True)
+        
+        # Process and alert for top opportunities
+        for opportunity in all_opportunities[:5]:  # Top 5 opportunities
+            logger.info(f"Found opportunity: {opportunity}")
+            
+            if self.should_send_alert(opportunity):
+                self.send_email_alert(opportunity)
+                self.send_webhook_alert(opportunity)
+        
+        self.opportunities = all_opportunities
+        return all_opportunities
+    
+    async def run_continuous(self, interval_seconds: int = 60):
+        """Run continuous scanning"""
+        logger.info(f"Starting continuous arbitrage scanning (interval: {interval_seconds}s)")
+        
+        while True:
+            try:
+                opportunities = await self.scan_once()
+                
+                if opportunities:
+                    logger.info(f"Found {len(opportunities)} arbitrage opportunities")
+                    for opp in opportunities[:3]:
+                        print(opp)
+                        print("-" * 50)
+                else:
+                    logger.info("No profitable arbitrage opportunities found")
+                
+                await asyncio.sleep(interval_seconds)
+                
+            except KeyboardInterrupt:
+                logger.info("Scanning stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"Error in scan cycle: {e}")
+                await asyncio.sleep(interval_seconds)
+        
+        # Cleanup
+        for exchange in self.exchanges:
+            await exchange.close()
+
+async def main():
+    """Main entry point"""
+    print("=" * 60)
+    print("CRYPTO ARBITRAGE SCANNER - PROFIT FINDER")
+    print("=" * 60)
+    print("Monitoring price differences across exchanges...")
+    print("Looking for profitable arbitrage opportunities...")
+    print("-" * 60)
+    
+    scanner = ArbitrageScanner()
+    
+    # Run continuous scanning
+    await scanner.run_continuous(interval_seconds=30)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutting down gracefully...")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        raise
